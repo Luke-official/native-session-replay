@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Session replay</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <h1>Draw &amp; record</h1>
+      <p>Hold the mouse button and move to draw. Cyan trails show mouse movement in replay; left-click drags appear in red.</p>
+    </header>
+    <button type="button" id="demo-btn">Click me</button>
+    <section class="toolbar" data-no-record aria-label="Session controls">
+      <p class="toolbar-label">Session</p>
+      <button type="button" id="save-btn" class="btn-primary">Save interaction</button>
+      <div class="toolbar-secondary">
+        <button type="button" id="view-btn" disabled>View latest</button>
+        <button type="button" id="reset-btn">Reset</button>
+        <button type="button" id="clear-saved-btn" disabled>Clear saved</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="replay-overlay" data-no-record>
+    <div id="replay-bar">
+      <button type="button" id="replay-play">Play</button>
+      <input type="range" id="replay-scrub" min="0" max="0" value="0">
+      <span id="replay-time">0:00 / 0:00</span>
+      <button type="button" id="replay-close">Close</button>
+    </div>
+    <div id="replay-stage">
+      <iframe id="replay-frame" title="Session replay"></iframe>
+      <canvas id="replay-draw"></canvas>
+    </div>
+  </div>
+
+  <script src="index.js"></script>
+</body>
+</html>
