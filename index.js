@@ -1,15 +1,48 @@
+/**
+ * @fileoverview Session recording and replay system.
+ * Captures initial DOM state, mutations, and user interactions to be saved and replayed in an iframe.
+ */
+
+/** @constant {string} LocalStorage key for saving interactions */
 const STORAGE_KEY = 'latestInteraction';
+
+/** @constant {Object} Colors used for drawing interaction trails */
 const COLORS = { move: '#22d3ee', drag: '#ef4444' };
+
+/** @constant {Object} Event listener options for capturing phase */
 const CAPTURE = { capture: true };
 
+/**
+ * Shorthand for document.getElementById.
+ * @param {string} id
+ * @returns {HTMLElement|null}
+ */
 const $ = (id) => document.getElementById(id);
+
+/**
+ * References to core UI elements used for recording controls and replay.
+ * @type {Object<string, HTMLElement|HTMLCanvasElement>}
+ */
 const ui = {
   save: $('save-btn'), view: $('view-btn'), clearSaved: $('clear-saved-btn'),
   overlay: $('replay-overlay'), frame: $('replay-frame'), scrub: $('replay-scrub'),
   play: $('replay-play'), time: $('replay-time'), canvas: $('replay-draw'),
 };
+
+/** @type {CanvasRenderingContext2D} Context for the replay drawing canvas */
 const ctx = ui.canvas.getContext('2d');
 
+/**
+ * State object for the active recording session.
+ * @type {Object}
+ * @property {number} t0 - Initial timestamp of the recording.
+ * @property {Array<Object>} events - Array of captured interaction/mutation events.
+ * @property {Object|null} snapshot - The initial HTML snapshot of the document.
+ * @property {boolean} drawing - Whether the user is currently holding the mouse down to draw/drag.
+ * @property {Object|null} dragPoint - The last recorded x/y coordinates of a drag.
+ * @property {number} moveFrame - RequestAnimationFrame ID for throttling mouse moves.
+ * @property {Object|null} pendingMove - The latest queued mouse movement.
+ */
 const recorder = {
   t0: performance.now(),
   events: [],
@@ -20,12 +53,38 @@ const recorder = {
   pendingMove: null,
 };
 
+/**
+ * State object for the active playback/replay session.
+ * @type {Object|null}
+ */
 let replay = null;
 
+/**
+ * Calculates the elapsed time since the recording started.
+ * @returns {number} Elapsed time in milliseconds.
+ */
 const timestamp = () => Math.round(performance.now() - recorder.t0);
+
+/**
+ * Checks if a node or its ancestors are marked to be excluded from recording.
+ * @param {HTMLElement} node
+ * @returns {boolean}
+ */
 const isExcluded = (node) => node?.closest?.('[data-no-record]');
+
+/**
+ * Checks if a node is an interactive element (buttons, inputs, etc.).
+ * @param {HTMLElement} node
+ * @returns {boolean}
+ */
 const isInteractive = (node) => node?.closest?.('button, input, textarea, select, a, [contenteditable]');
 
+/**
+ * Generates an array of child indices representing the tree path to a specific element.
+ * Useful for locating the exact same element in the isolated replay iframe.
+ * @param {HTMLElement} element
+ * @returns {Array<number>}
+ */
 function domPath(element) {
   const path = [];
   for (let node = element; node && node !== document.body; node = node.parentElement) {
@@ -34,16 +93,30 @@ function domPath(element) {
   return path;
 }
 
+/**
+ * Pushes a new event to the recording timeline.
+ * @param {string} type - The event type (e.g., 'mm', 'mut', 'sc').
+ * @param {Object} [data={}] - Associated event data.
+ */
 function record(type, data = {}) {
   recorder.events.push({ t: timestamp(), type, ...data });
 }
 
+/**
+ * Captures the current state of the DOM, filtering out excluded elements.
+ * @returns {{html: string, head: string, w: number, h: number}} The snapshot payload.
+ */
 function takeSnapshot() {
   const body = document.body.cloneNode(true);
   body.querySelectorAll('[data-no-record]').forEach((el) => el.remove());
   return { html: body.innerHTML, head: document.head.innerHTML, w: innerWidth, h: innerHeight };
 }
 
+/**
+ * Calculates the exact child node indices for removed elements in a MutationRecord.
+ * @param {MutationRecord} record
+ * @returns {Array<number>}
+ */
 function removedIndices(record) {
   const indices = [];
   let offset = 0;
@@ -58,6 +131,10 @@ function removedIndices(record) {
   return indices;
 }
 
+/**
+ * Handles DOM changes observed by the MutationObserver and records them.
+ * @param {MutationRecord} record
+ */
 function recordMutation(record) {
   if (isExcluded(record.target)) return;
   const path = domPath(record.target);
@@ -81,6 +158,10 @@ function recordMutation(record) {
   }
 }
 
+/**
+ * Queues a mouse movement for recording, throttling it via requestAnimationFrame.
+ * @param {{x: number, y: number}} point
+ */
 function queueMove(point) {
   recorder.pendingMove = point;
   if (recorder.moveFrame) return;
@@ -90,16 +171,34 @@ function queueMove(point) {
   });
 }
 
+/**
+ * Records a dragging/drawing motion.
+ * @param {number} x
+ * @param {number} y
+ * @param {boolean} [persist=true] - Whether to record the action permanently.
+ */
 function dragTo(x, y, persist = true) {
   const { dragPoint } = recorder;
   if (dragPoint && persist) record('dr', { x0: dragPoint.x, y0: dragPoint.y, x1: x, y1: y });
   recorder.dragPoint = { x, y };
 }
 
+/**
+ * Records a break in the mouse trail (e.g., mouseout or mouseup).
+ */
 function breakTrail() {
   record('mb');
 }
 
+/**
+ * Helper to draw a stroke on the replay canvas.
+ * @param {number} x0
+ * @param {number} y0
+ * @param {number} x1
+ * @param {number} y1
+ * @param {string} color
+ * @param {number} width
+ */
 function strokeLine(x0, y0, x1, y1, color, width) {
   Object.assign(ctx, { strokeStyle: color, lineWidth: width, lineCap: 'round', lineJoin: 'round' });
   ctx.beginPath();
@@ -108,15 +207,31 @@ function strokeLine(x0, y0, x1, y1, color, width) {
   ctx.stroke();
 }
 
+/**
+ * Resolves a DOM node from an array of child indices within a specific document.
+ * @param {Document} doc - The target document (usually the replay iframe).
+ * @param {Array<number>} path - The domPath array.
+ * @returns {HTMLElement}
+ */
 function nodeAt(doc, path) {
   return path.reduce((node, index) => node.children[index], doc.body);
 }
 
+/**
+ * Clears the canvas and updates its dimensions.
+ * @param {number} width
+ * @param {number} height
+ */
 function clearCanvas(width, height) {
   ui.canvas.width = width;
   ui.canvas.height = height;
 }
 
+/**
+ * Loads the initial HTML snapshot into the replay iframe.
+ * @param {Object} snapshot
+ * @param {Function} onReady - Callback executed once the iframe is loaded.
+ */
 function mountReplayDocument(snapshot, onReady) {
   ui.frame.srcdoc = `<!DOCTYPE html><html><head>${snapshot.head}</head><body>${snapshot.html}</body></html>`;
   ui.frame.onload = () => {
@@ -129,29 +244,33 @@ function mountReplayDocument(snapshot, onReady) {
   };
 }
 
+/**
+ * Handlers mapping event types to their corresponding replay actions.
+ * @type {Object<string, Function>}
+ */
 const replayHandlers = {
-  mm(_doc, { x, y }) {
+  mm(_doc, { x, y }) { // Mouse Move
     if (replay.trail) strokeLine(replay.trail.x, replay.trail.y, x, y, COLORS.move, 2);
     replay.trail = { x, y };
   },
-  mb: () => { replay.trail = null; },
-  dr(_doc, { x0, y0, x1, y1 }) {
+  mb: () => { replay.trail = null; }, // Mouse Break
+  dr(_doc, { x0, y0, x1, y1 }) { // Drag
     strokeLine(x0, y0, x1, y1, COLORS.drag, 3);
   },
-  dc: () => {
+  dc: () => { // Draw Clear
     clearCanvas(replay.snapshot.w, replay.snapshot.h);
     replay.trail = null;
   },
-  sc(doc, { path, x, y }) {
+  sc(doc, { path, x, y }) { // Scroll
     const target = path ? nodeAt(doc, path) : doc.documentElement;
     target.scrollLeft = x;
     target.scrollTop = y;
   },
-  rs(_doc, { w, h }) {
+  rs(_doc, { w, h }) { // Resize
     ui.frame.style.width = `${w}px`;
     ui.frame.style.height = `${h}px`;
   },
-  mut(doc, event) {
+  mut(doc, event) { // DOM Mutation
     if (event.kind === 'child') {
       const parent = nodeAt(doc, event.path);
       for (const index of [...event.removed].sort((a, b) => b - a)) parent.children[index]?.remove();
@@ -171,6 +290,11 @@ const replayHandlers = {
   },
 };
 
+/**
+ * Applies all recorded events up to a specific timestamp in the replay iframe.
+ * @param {Document} doc - The iframe document.
+ * @param {number} ms - Target timestamp in milliseconds.
+ */
 function applyEventsUpTo(doc, ms) {
   replay.index = 0;
   replay.trail = null;
@@ -187,16 +311,27 @@ function applyEventsUpTo(doc, ms) {
   ui.time.textContent = `${formatTime(ms)} / ${formatTime(replay.duration)}`;
 }
 
+/**
+ * Formats milliseconds into an M:SS string.
+ * @param {number} ms
+ * @returns {string}
+ */
 function formatTime(ms) {
   const totalSeconds = Math.floor(ms / 1000);
   return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`;
 }
 
+/**
+ * Syncs the disabled states of UI buttons depending on whether a recording exists in localStorage.
+ */
 function syncSavedState() {
   const hasSaved = !!localStorage.getItem(STORAGE_KEY);
   ui.view.disabled = ui.clearSaved.disabled = !hasSaved;
 }
 
+/**
+ * Pauses the ongoing replay playback.
+ */
 function pauseReplay() {
   if (!replay?.playing) return;
   replay.playing = false;
@@ -205,6 +340,9 @@ function pauseReplay() {
   ui.play.textContent = 'Play';
 }
 
+/**
+ * Starts or resumes the replay playback.
+ */
 function startReplay() {
   replay.playing = true;
   replay.startedAt = performance.now();
@@ -212,6 +350,12 @@ function startReplay() {
   tickReplay();
 }
 
+/**
+ * Seeks to a specific point in the replay timeline.
+ * Reloads the base document and fast-forwards events up to the target time.
+ * @param {number} ms
+ * @param {boolean} [resume=false] - Whether to immediately play after seeking.
+ */
 function seekReplay(ms, resume = false) {
   if (!replay) return;
   pauseReplay();
@@ -222,6 +366,9 @@ function seekReplay(ms, resume = false) {
   });
 }
 
+/**
+ * The main playback loop, driven by requestAnimationFrame.
+ */
 function tickReplay() {
   if (!replay?.playing) return;
 
@@ -244,12 +391,19 @@ function tickReplay() {
   replay.frameId = requestAnimationFrame(tickReplay);
 }
 
+/**
+ * Closes the replay overlay and halts playback.
+ */
 function closeReplay() {
   pauseReplay();
   replay = null;
   ui.overlay.classList.remove('open');
   ui.frame.srcdoc = '';
 }
+
+// ----------------------------------------------------------------------------
+// Initialization & Event Listeners
+// ----------------------------------------------------------------------------
 
 recorder.snapshot = takeSnapshot();
 
@@ -293,6 +447,7 @@ document.addEventListener('mouseup', () => {
 
 addEventListener('resize', () => record('rs', { w: innerWidth, h: innerHeight }));
 
+// UI Bindings
 $('demo-btn').addEventListener('click', (event) => {
   const count = Number(event.target.dataset.count || 0) + 1;
   event.target.dataset.count = count;
